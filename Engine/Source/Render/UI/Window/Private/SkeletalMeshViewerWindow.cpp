@@ -1790,9 +1790,19 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 			if (bUniformBoneScale)
 			{
 				// Uniform: X축 변화 비율을 Y, Z축에도 적용 (언리얼 방식)
-				const float ScaleRatio = TempTransform.Scale.X / PrevScale.X;
-				TempTransform.Scale.Y = PrevScale.Y * ScaleRatio;
-				TempTransform.Scale.Z = PrevScale.Z * ScaleRatio;
+				constexpr float MinScaleThreshold = 0.0001f;
+				if (std::abs(PrevScale.X) > MinScaleThreshold)
+				{
+					const float ScaleRatio = TempTransform.Scale.X / PrevScale.X;
+					TempTransform.Scale.Y = PrevScale.Y * ScaleRatio;
+					TempTransform.Scale.Z = PrevScale.Z * ScaleRatio;
+				}
+				else
+				{
+					// PrevScale.X가 0에 가까우면 현재 값을 다른 축에도 적용
+					TempTransform.Scale.Y = TempTransform.Scale.X;
+					TempTransform.Scale.Z = TempTransform.Scale.X;
+				}
 			}
 			bDirtyBoneTransforms = true;
 		}
@@ -1809,9 +1819,19 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 			if (bUniformBoneScale)
 			{
 				// Uniform: Y축 변화 비율을 X, Z축에도 적용 (언리얼 방식)
-				const float ScaleRatio = TempTransform.Scale.Y / PrevScale.Y;
-				TempTransform.Scale.X = PrevScale.X * ScaleRatio;
-				TempTransform.Scale.Z = PrevScale.Z * ScaleRatio;
+				constexpr float MinScaleThreshold = 0.0001f;
+				if (std::abs(PrevScale.Y) > MinScaleThreshold)
+				{
+					const float ScaleRatio = TempTransform.Scale.Y / PrevScale.Y;
+					TempTransform.Scale.X = PrevScale.X * ScaleRatio;
+					TempTransform.Scale.Z = PrevScale.Z * ScaleRatio;
+				}
+				else
+				{
+					// PrevScale.Y가 0에 가까우면 현재 값을 다른 축에도 적용
+					TempTransform.Scale.X = TempTransform.Scale.Y;
+					TempTransform.Scale.Z = TempTransform.Scale.Y;
+				}
 			}
 			bDirtyBoneTransforms = true;
 		}
@@ -1828,9 +1848,19 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 			if (bUniformBoneScale)
 			{
 				// Uniform: Z축 변화 비율을 X, Y축에도 적용 (언리얼 방식)
-				const float ScaleRatio = TempTransform.Scale.Z / PrevScale.Z;
-				TempTransform.Scale.X = PrevScale.X * ScaleRatio;
-				TempTransform.Scale.Y = PrevScale.Y * ScaleRatio;
+				constexpr float MinScaleThreshold = 0.0001f;
+				if (std::abs(PrevScale.Z) > MinScaleThreshold)
+				{
+					const float ScaleRatio = TempTransform.Scale.Z / PrevScale.Z;
+					TempTransform.Scale.X = PrevScale.X * ScaleRatio;
+					TempTransform.Scale.Y = PrevScale.Y * ScaleRatio;
+				}
+				else
+				{
+					// PrevScale.Z가 0에 가까우면 현재 값을 다른 축에도 적용
+					TempTransform.Scale.X = TempTransform.Scale.Z;
+					TempTransform.Scale.Y = TempTransform.Scale.Z;
+				}
 			}
 			bDirtyBoneTransforms = true;
 		}

@@ -1077,9 +1077,19 @@ void UActorDetailWidget::RenderTransformEdit()
 		if (bUniformScale)
 		{
 			// Uniform Scale: 비율 유지하면서 모든 축 스케일
-			float ScaleRatio = ScaleArray[0] / PrevScale.X;
-			ScaleArray[1] = PrevScale.Y * ScaleRatio;
-			ScaleArray[2] = PrevScale.Z * ScaleRatio;
+			constexpr float MinScaleThreshold = 0.0001f;
+			if (std::abs(PrevScale.X) > MinScaleThreshold)
+			{
+				float ScaleRatio = ScaleArray[0] / PrevScale.X;
+				ScaleArray[1] = PrevScale.Y * ScaleRatio;
+				ScaleArray[2] = PrevScale.Z * ScaleRatio;
+			}
+			else
+			{
+				// PrevScale.X가 0에 가까우면 현재 값을 다른 축에도 적용
+				ScaleArray[1] = ScaleArray[0];
+				ScaleArray[2] = ScaleArray[0];
+			}
 		}
 		ScaleChanged = true;
 	}
@@ -1100,9 +1110,19 @@ void UActorDetailWidget::RenderTransformEdit()
 		if (bUniformScale)
 		{
 			// Uniform Scale: 비율 유지하면서 모든 축 스케일
-			float ScaleRatio = ScaleArray[1] / PrevScale.Y;
-			ScaleArray[0] = PrevScale.X * ScaleRatio;
-			ScaleArray[2] = PrevScale.Z * ScaleRatio;
+			constexpr float MinScaleThreshold = 0.0001f;
+			if (std::abs(PrevScale.Y) > MinScaleThreshold)
+			{
+				float ScaleRatio = ScaleArray[1] / PrevScale.Y;
+				ScaleArray[0] = PrevScale.X * ScaleRatio;
+				ScaleArray[2] = PrevScale.Z * ScaleRatio;
+			}
+			else
+			{
+				// PrevScale.Y가 0에 가까우면 현재 값을 다른 축에도 적용
+				ScaleArray[0] = ScaleArray[1];
+				ScaleArray[2] = ScaleArray[1];
+			}
 		}
 		ScaleChanged = true;
 	}
@@ -1123,9 +1143,19 @@ void UActorDetailWidget::RenderTransformEdit()
 		if (bUniformScale)
 		{
 			// Uniform Scale: 비율 유지하면서 모든 축 스케일
-			float ScaleRatio = ScaleArray[2] / PrevScale.Z;
-			ScaleArray[0] = PrevScale.X * ScaleRatio;
-			ScaleArray[1] = PrevScale.Y * ScaleRatio;
+			constexpr float MinScaleThreshold = 0.0001f;
+			if (std::abs(PrevScale.Z) > MinScaleThreshold)
+			{
+				float ScaleRatio = ScaleArray[2] / PrevScale.Z;
+				ScaleArray[0] = PrevScale.X * ScaleRatio;
+				ScaleArray[1] = PrevScale.Y * ScaleRatio;
+			}
+			else
+			{
+				// PrevScale.Z가 0에 가까우면 현재 값을 다른 축에도 적용
+				ScaleArray[0] = ScaleArray[2];
+				ScaleArray[1] = ScaleArray[2];
+			}
 		}
 		ScaleChanged = true;
 	}
