@@ -1897,6 +1897,14 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 		{
 			TempBoneSpaceTransforms[SelectedBoneIndex] = OriginalSkeletalMeshComponent->GetBoneTransformLocal(SelectedBoneIndex);
 			SkeletalMeshComponent->SetBoneTransformLocal(SelectedBoneIndex, TempBoneSpaceTransforms[SelectedBoneIndex]);
+			// 본 트랜스폼 갱신
+			SkeletalMeshComponent->RefreshBoneTransforms();
+			// 기즈모 위치 업데이트
+			if (ViewerGizmo)
+			{
+				FVector BoneWorldLocation = GetBoneWorldLocation(SelectedBoneIndex);
+				ViewerGizmo->SetFixedLocation(BoneWorldLocation);
+			}
 			// 캐시 초기화
 			CachedRotation = TempBoneSpaceTransforms[SelectedBoneIndex].Rotation.ToEuler();
 			bIsDraggingRotation = false;
@@ -1907,6 +1915,14 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 		{
 			TempBoneSpaceTransforms[SelectedBoneIndex] = RefBonePoses[SelectedBoneIndex];
 			SkeletalMeshComponent->SetBoneTransformLocal(SelectedBoneIndex, TempBoneSpaceTransforms[SelectedBoneIndex]);
+			// 본 트랜스폼 갱신
+			SkeletalMeshComponent->RefreshBoneTransforms();
+			// 기즈모 위치 업데이트
+			if (ViewerGizmo)
+			{
+				FVector BoneWorldLocation = GetBoneWorldLocation(SelectedBoneIndex);
+				ViewerGizmo->SetFixedLocation(BoneWorldLocation);
+			}
 			// 캐시 초기화
 			CachedRotation = TempBoneSpaceTransforms[SelectedBoneIndex].Rotation.ToEuler();
 			bIsDraggingRotation = false;
@@ -1960,6 +1976,14 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 			TempBoneSpaceTransforms[i] = OriginalSkeletalMeshComponent->GetBoneTransformLocal(i);
 			SkeletalMeshComponent->SetBoneTransformLocal(i, TempBoneSpaceTransforms[i]);
 		}
+		// 본 트랜스폼 갱신
+		SkeletalMeshComponent->RefreshBoneTransforms();
+		// 선택된 본이 있으면 기즈모 위치 업데이트
+		if (SelectedBoneIndex != -1 && ViewerGizmo)
+		{
+			FVector BoneWorldLocation = GetBoneWorldLocation(SelectedBoneIndex);
+			ViewerGizmo->SetFixedLocation(BoneWorldLocation);
+		}
 		UE_LOG("SkeletalMeshViewerWindow: Reset temp bone transforms to last value");
 	}
 
@@ -1969,6 +1993,14 @@ void USkeletalMeshViewerWindow::RenderEditToolsPanel(const USkeletalMesh* InSkel
 		{
 			TempBoneSpaceTransforms[i] = RefBonePoses[i];
 			SkeletalMeshComponent->SetBoneTransformLocal(i, TempBoneSpaceTransforms[i]);
+		}
+		// 본 트랜스폼 갱신
+		SkeletalMeshComponent->RefreshBoneTransforms();
+		// 선택된 본이 있으면 기즈모 위치 업데이트
+		if (SelectedBoneIndex != -1 && ViewerGizmo)
+		{
+			FVector BoneWorldLocation = GetBoneWorldLocation(SelectedBoneIndex);
+			ViewerGizmo->SetFixedLocation(BoneWorldLocation);
 		}
 		UE_LOG("SkeletalMeshViewerWindow: Reset temp bone transforms to reference pose");
 	}
