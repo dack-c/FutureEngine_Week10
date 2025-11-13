@@ -8,6 +8,46 @@
 // 🔸 Public API
 // ========================================
 
+struct VertexKey
+{
+	FVector Position;
+	FVector Normal;
+	FVector2 UV;
+	FVector4 Tangent; // W=Handedness
+
+	bool operator==(const VertexKey& Other) const
+	{
+		return Position == Other.Position &&
+			Normal == Other.Normal &&
+			UV == Other.UV &&
+			Tangent == Other.Tangent;
+	}
+};
+
+struct VertexKeyHasher
+{
+	size_t operator()(const VertexKey& V) const
+	{
+		auto h1 = std::hash<float>()(V.Position.X) ^
+			(std::hash<float>()(V.Position.Y) << 1) ^
+			(std::hash<float>()(V.Position.Z) << 2);
+
+		auto h2 = std::hash<float>()(V.Normal.X) ^
+			(std::hash<float>()(V.Normal.Y) << 1) ^
+			(std::hash<float>()(V.Normal.Z) << 2);
+
+		auto h3 = std::hash<float>()(V.UV.X) ^
+			(std::hash<float>()(V.UV.Y) << 1);
+
+		auto h4 = std::hash<float>()(V.Tangent.X) ^
+			(std::hash<float>()(V.Tangent.Y) << 1) ^
+			(std::hash<float>()(V.Tangent.Z) << 2) ^
+			(std::hash<float>()(V.Tangent.W) << 3);
+
+		return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
+	}
+};
+
 bool FFbxImporter::Initialize()
 {
 	if (SdkManager) { return true; }
@@ -383,232 +423,151 @@ std::filesystem::path FFbxImporter::ResolveTexturePath(
 
 void FFbxImporter::ExtractGeometryData(FbxMesh* Mesh, FFbxStaticMeshInfo* OutMeshInfo, const Configuration& Config, bool bReverseWinding)
 {
-	// Material Mapping 정보 가져오기
 	FbxLayerElementMaterial* MaterialElement = Mesh->GetElementMaterial();
-	FbxGeometryElement::EMappingMode MaterialMappingMode = FbxGeometryElement::eNone;
-	if (MaterialElement)
-	{
-		MaterialMappingMode = MaterialElement->GetMappingMode();
-		UE_LOG("[FbxImporter] Material Mapping Mode: %d", (int)MaterialMappingMode);
-	}
+	FbxGeometryElement::EMappingMode MaterialMode =
+		MaterialElement ? MaterialElement->GetMappingMode() : FbxGeometryElement::eNone;
 
-	// 기존 ControlPoint 기반 VertexList를 백업
+	// 기존 ControlPoint 기반 Position 백업
 	TArray<FVector> ControlPointPositions = OutMeshInfo->VertexList;
 
-	// 새로운 Polygon Vertex 기반 데이터로 재구성
+	// 기존 데이터 비우기
 	OutMeshInfo->VertexList.Empty();
 	OutMeshInfo->NormalList.Empty();
 	OutMeshInfo->TexCoordList.Empty();
 	OutMeshInfo->TangentList.Empty();
 	OutMeshInfo->Indices.Empty();
 
-	// Material별 인덱스 그룹 초기화
+	// Material 별 인덱스 리스트
 	TArray<TArray<uint32>> IndicesPerMaterial;
-	IndicesPerMaterial.Reset(OutMeshInfo->Materials.Num());
-	for (int i = 0; i < OutMeshInfo->Materials.Num(); ++i)
-	{
-		IndicesPerMaterial.Add(TArray<uint32>());
-	}
+	IndicesPerMaterial.SetNum(OutMeshInfo->Materials.Num());
 
-	uint32 VertexCounter = 0;
+	// ⭐ Dedup 테이블
+	std::unordered_map<VertexKey, uint32, VertexKeyHasher> VertexCache;
+
+	const int PolygonCount = Mesh->GetPolygonCount();
 
 	const FbxGeometryElementNormal* LayerNormal = Mesh->GetElementNormal(0);
 	const FbxGeometryElementTangent* LayerTangent = Mesh->GetElementTangent(0);
 
-	// Tangent가 없으면 자동 생성
+	// Tangent 없으면 자동 생성
 	if (!LayerTangent)
 	{
-		UE_LOG("[FbxImporter] Tangent 데이터가 없어 자동 생성합니다.");
-		bool bResult = Mesh->GenerateTangentsDataForAllUVSets();
-		if (bResult)
-		{
-			LayerTangent = Mesh->GetElementTangent(0);
-			UE_LOG_SUCCESS("[FbxImporter] Tangent 자동 생성 완료");
-		}
-		else
-		{
-			UE_LOG_WARNING("[FbxImporter] Tangent 자동 생성 실패");
-		}
+		Mesh->GenerateTangentsDataForAllUVSets();
+		LayerTangent = Mesh->GetElementTangent(0);
 	}
 
 	FbxStringList UVSetNames;
 	Mesh->GetUVSetNames(UVSetNames);
-	const char* ActiveUVSet = (UVSetNames.GetCount() > 0) ? UVSetNames[0] : nullptr;
 
-	// 폴리곤별로 버텍스 데이터 생성
-	const int PolygonCount = Mesh->GetPolygonCount();
+	// 폴리곤 순회
 	for (int p = 0; p < PolygonCount; ++p)
 	{
-		// 이 Polygon이 사용하는 Material Index 확인
-		int MaterialIndex = 0;
+		// Material index
+		int MatIndex = 0;
 		if (MaterialElement)
 		{
-			switch (MaterialMappingMode)
-			{
-			case FbxGeometryElement::eByPolygon:
-				MaterialIndex = MaterialElement->GetIndexArray().GetAt(p);
-				break;
-			case FbxGeometryElement::eAllSame:
-				MaterialIndex = 0;
-				break;
-			default:
-				MaterialIndex = 0;
-				break;
-			}
+			if (MaterialMode == FbxGeometryElement::eByPolygon)
+				MatIndex = MaterialElement->GetIndexArray().GetAt(p);
+			else
+				MatIndex = 0;
 		}
+		if (!IndicesPerMaterial.IsValidIndex(MatIndex))
+			MatIndex = 0;
 
-		// Material Index 범위 검증
-		if (MaterialIndex < 0 || MaterialIndex >= OutMeshInfo->Materials.Num())
+		// 폴리곤은 Triangulate 되어 항상 3
+		for (int v = 0; v < 3; ++v)
 		{
-			MaterialIndex = 0;
-		}
+			int CPIndex = Mesh->GetPolygonVertex(p, v);
 
-		// Triangulate를 거쳤기 때문에 PolygonSize는 항상 3
-		int PolySize = Mesh->GetPolygonSize(p);
-		for (int v = 0; v < PolySize; ++v)
-		{
-			int CtrlPointIndex = Mesh->GetPolygonVertex(p, v);
+			// -------- Position
+			FVector Position = (CPIndex >= 0 && CPIndex < ControlPointPositions.Num())
+				? ControlPointPositions[CPIndex]
+				: FVector(0, 0, 0);
 
-			// Position: ControlPoint에서 가져오기
-			if (CtrlPointIndex >= 0 && CtrlPointIndex < ControlPointPositions.Num())
-			{
-				OutMeshInfo->VertexList.Add(ControlPointPositions[CtrlPointIndex]);
-			}
-			else
-			{
-				OutMeshInfo->VertexList.Add(FVector(0, 0, 0));
-			}
+			// -------- Normal
+			FbxVector4 N;
+			Mesh->GetPolygonVertexNormal(p, v, N);
+			FVector Normal(N[0], N[1], N[2]);
 
-			// Normal
-			FbxVector4 Normal;
-			bool bHasNormal = false;
-			if (LayerNormal && LayerNormal->GetMappingMode() == FbxGeometryElement::eByPolygonVertex)
-			{
-				bHasNormal = Mesh->GetPolygonVertexNormal(p, v, Normal);
-			}
-			else
-			{
-				bHasNormal = Mesh->GetPolygonVertexNormal(p, v, Normal); // fallback
-			}
-			if (bHasNormal)
-			{
-				// ConvertScene()이 이미 엔진 좌표계로 변환했으므로 그대로 사용
-				FVector N(Normal[0], Normal[1], Normal[2]);
-				OutMeshInfo->NormalList.Add(N);
-			}
-			else
-			{
-				OutMeshInfo->NormalList.Add(FVector(0, 1, 0));
-			}
+			// -------- Tangent
+			FbxVector4 T(1, 0, 0, 1);
+			int PolyVertIndex = p * 3 + v;
 
-			// Tangent 추출
-			FbxVector4 Tangent(1, 0, 0, 1);  // 기본값: X축 방향, Handedness = 1
 			if (LayerTangent)
 			{
-				int TangentIndex = 0;
 				if (LayerTangent->GetMappingMode() == FbxGeometryElement::eByPolygonVertex)
 				{
 					if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eDirect)
 					{
-						int PolyVertIndex = p * 3 + v;  // 삼각형이므로 폴리곤당 3개 버텍스
-						if (PolyVertIndex < LayerTangent->GetDirectArray().GetCount())
-						{
-							Tangent = LayerTangent->GetDirectArray().GetAt(PolyVertIndex);
-						}
+						T = LayerTangent->GetDirectArray().GetAt(PolyVertIndex);
 					}
-					else if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eIndexToDirect)
+					else
 					{
-						int PolyVertIndex = p * 3 + v;
-						if (PolyVertIndex < LayerTangent->GetIndexArray().GetCount())
-						{
-							TangentIndex = LayerTangent->GetIndexArray().GetAt(PolyVertIndex);
-							Tangent = LayerTangent->GetDirectArray().GetAt(TangentIndex);
-						}
-					}
-				}
-				else if (LayerTangent->GetMappingMode() == FbxGeometryElement::eByControlPoint)
-				{
-					if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eDirect)
-					{
-						Tangent = LayerTangent->GetDirectArray().GetAt(CtrlPointIndex);
-					}
-					else if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eIndexToDirect)
-					{
-						TangentIndex = LayerTangent->GetIndexArray().GetAt(CtrlPointIndex);
-						Tangent = LayerTangent->GetDirectArray().GetAt(TangentIndex);
+						int TIdx = LayerTangent->GetIndexArray().GetAt(PolyVertIndex);
+						T = LayerTangent->GetDirectArray().GetAt(TIdx);
 					}
 				}
 			}
 
-			// Handedness 계산 (Cross product를 이용한 검증)
-			FVector T(Tangent[0], Tangent[1], Tangent[2]);
-			FVector N = OutMeshInfo->NormalList.Last();
-			FVector BiTangent = N.Cross(T);
+			FVector Tangent(T[0], T[1], T[2]);
+			FVector BiTangent = Normal.Cross(Tangent);
 			float Handedness = (BiTangent.Length() > 0.0001f) ? 1.0f : -1.0f;
 
-			OutMeshInfo->TangentList.Add(FVector4(T.X, T.Y, T.Z, Handedness));
+			FVector4 Tangent4(Tangent.X, Tangent.Y, Tangent.Z, Handedness);
 
-			// UV 추출
+			// -------- UV
+			FVector2 Tex(0, 0);
 			if (Mesh->GetElementUVCount() > 0)
 			{
-				const FbxGeometryElementUV* ElementUV = Mesh->GetElementUV(0);
-				FbxGeometryElement::EMappingMode MappingMode = ElementUV->GetMappingMode();
-				FbxGeometryElement::EReferenceMode RefMode = ElementUV->GetReferenceMode();
+				const FbxGeometryElementUV* ElemUV = Mesh->GetElementUV(0);
+				int UVIndex = Mesh->GetTextureUVIndex(p, v);
 
-				int PolyVertexIndex = Mesh->GetPolygonVertex(p, v);
-				FVector2 UVConv(0, 0);
+				FbxVector2 UV = ElemUV->GetDirectArray().GetAt(UVIndex);
+				Tex = FVector2(UV[0], 1.0f - UV[1]);
+			}
 
-				switch (MappingMode)
-				{
-				case FbxGeometryElement::eByControlPoint:
-				{
-					int UVIndex = (RefMode == FbxGeometryElement::eIndexToDirect)
-						? ElementUV->GetIndexArray().GetAt(PolyVertexIndex)
-						: PolyVertexIndex;
+			// Key 생성
+			VertexKey Key;
+			Key.Position = Position;
+			Key.Normal = Normal;
+			Key.UV = Tex;
+			Key.Tangent = Tangent4;
 
-					FbxVector2 UV = ElementUV->GetDirectArray().GetAt(UVIndex);
-					UVConv = FVector2(UV[0], 1.0f - UV[1]);
-				}
-				break;
+			uint32 FinalIndex;
+			auto Found = VertexCache.find(Key);
 
-				case FbxGeometryElement::eByPolygonVertex:
-				{
-					int UVIndex = Mesh->GetTextureUVIndex(p, v);
-					FbxVector2 UV = ElementUV->GetDirectArray().GetAt(UVIndex);
-					UVConv = FVector2(UV[0], 1.0f - UV[1]);
-				}
-				break;
-
-				default:
-					UVConv = FVector2(0, 0);
-					break;
-				}
-
-				OutMeshInfo->TexCoordList.Add(UVConv);
+			if (Found != VertexCache.end())
+			{
+				// 이미 있는 정점 → 인덱스 재사용
+				FinalIndex = Found->second;
 			}
 			else
 			{
-				OutMeshInfo->TexCoordList.Add(FVector2(0, 0));
+				// 새 정점
+				FinalIndex = OutMeshInfo->VertexList.Num();
+				VertexCache.emplace(Key, FinalIndex);
+
+				OutMeshInfo->VertexList.Add(Position);
+				OutMeshInfo->NormalList.Add(Normal);
+				OutMeshInfo->TexCoordList.Add(Tex);
+				OutMeshInfo->TangentList.Add(Tangent4);
 			}
 
-			// 인덱스는 순차적으로
-			OutMeshInfo->Indices.Add(VertexCounter);
-			IndicesPerMaterial[MaterialIndex].Add(VertexCounter);
-			VertexCounter++;
+			// 인덱스 추가
+			IndicesPerMaterial[MatIndex].Add(FinalIndex);
 		}
 	}
 
-	UE_LOG("[FbxImporter] Total Vertices: %d, Normals: %d, UVs: %d, Indices: %d",
-		OutMeshInfo->VertexList.Num(), OutMeshInfo->NormalList.Num(),
-		OutMeshInfo->TexCoordList.Num(), OutMeshInfo->Indices.Num());
-
-	// Indices를 Material별로 재정렬
-	// 현재 Indices는 Polygon 순서대로 저장되어 있지만,
-	// Section은 Material별로 연속된 범위를 가정하므로 재구성이 필요
+	// Material 정렬로 최종 인덱스 조립
 	OutMeshInfo->Indices.Empty();
 	for (int i = 0; i < IndicesPerMaterial.Num(); ++i)
 	{
-		if (bReverseWinding)
+		if (!bReverseWinding)
+		{
+			for (uint32 idx : IndicesPerMaterial[i])
+				OutMeshInfo->Indices.Add(idx);
+		}
+		else
 		{
 			for (int j = 0; j < IndicesPerMaterial[i].Num(); j += 3)
 			{
@@ -620,16 +579,9 @@ void FFbxImporter::ExtractGeometryData(FbxMesh* Mesh, FFbxStaticMeshInfo* OutMes
 				}
 			}
 		}
-		else
-		{
-			for (int j = 0; j < IndicesPerMaterial[i].Num(); ++j)
-			{
-				OutMeshInfo->Indices.Add(IndicesPerMaterial[i][j]);
-			}
-		}
 	}
 
-	// Mesh Section 정보 생성
+	// Section 생성
 	BuildMeshSections(IndicesPerMaterial, OutMeshInfo);
 }
 
@@ -1138,7 +1090,8 @@ void FFbxImporter::ExtractSkeletalGeometryData(FbxMesh* Mesh, FFbxSkeletalMeshIn
 		IndicesPerMaterial.SetNum(OutMeshInfo->Materials.Num());
 	}
 
-	uint32 VertexCounter = VertexOffset;
+	// Dedup 테이블
+	std::unordered_map<VertexKey, uint32, VertexKeyHasher> VertexCache;
 
 	const FbxGeometryElementTangent* LayerTangent = Mesh->GetElementTangent(0);
 
@@ -1188,102 +1141,83 @@ void FFbxImporter::ExtractSkeletalGeometryData(FbxMesh* Mesh, FFbxSkeletalMeshIn
 		{
 			int CtrlPointIndex = Mesh->GetPolygonVertex(p, v);
 
-			// ControlPoint 인덱스 저장 (오프셋 적용)
-			OutMeshInfo->ControlPointIndices.Add(CtrlPointIndex + ControlPointOffset);
+			// -------- Position
+			FVector Position = (CtrlPointIndex >= 0 && CtrlPointIndex < ControlPointPositions.Num())
+				? ControlPointPositions[CtrlPointIndex]
+				: FVector(0, 0, 0);
 
-			// Position
-			if (CtrlPointIndex >= 0 && CtrlPointIndex < ControlPointPositions.Num())
-			{
-				OutMeshInfo->VertexList.Add(ControlPointPositions[CtrlPointIndex]);
-			}
-			else
-			{
-				OutMeshInfo->VertexList.Add(FVector(0, 0, 0));
-			}
+			// -------- Normal
+			FbxVector4 N;
+			Mesh->GetPolygonVertexNormal(p, v, N);
+			FVector Normal(N[0], N[1], N[2]);
 
-			// Normal
-			FbxVector4 Normal;
-			if (Mesh->GetPolygonVertexNormal(p, v, Normal))
-			{
-				// ConvertScene()이 이미 엔진 좌표계로 변환했으므로 그대로 사용
-				FVector N(Normal[0], Normal[1], Normal[2]);
-				OutMeshInfo->NormalList.Add(N);
-			}
-			else
-			{
-				OutMeshInfo->NormalList.Add(FVector(0, 1, 0));
-			}
+			// -------- Tangent
+			FbxVector4 T(1, 0, 0, 1);
+			int PolyVertIndex = p * 3 + v;
 
-			// Tangent 추출
-			FbxVector4 Tangent(1, 0, 0, 1);  // 기본값: X축 방향, Handedness = 1
 			if (LayerTangent)
 			{
-				int TangentIndex = 0;
 				if (LayerTangent->GetMappingMode() == FbxGeometryElement::eByPolygonVertex)
 				{
 					if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eDirect)
 					{
-						int PolyVertIndex = p * 3 + v;  // 삼각형이므로 폴리곤당 3개 버텍스
-						if (PolyVertIndex < LayerTangent->GetDirectArray().GetCount())
-						{
-							Tangent = LayerTangent->GetDirectArray().GetAt(PolyVertIndex);
-						}
+						T = LayerTangent->GetDirectArray().GetAt(PolyVertIndex);
 					}
-					else if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eIndexToDirect)
+					else
 					{
-						int PolyVertIndex = p * 3 + v;
-						if (PolyVertIndex < LayerTangent->GetIndexArray().GetCount())
-						{
-							TangentIndex = LayerTangent->GetIndexArray().GetAt(PolyVertIndex);
-							Tangent = LayerTangent->GetDirectArray().GetAt(TangentIndex);
-						}
-					}
-				}
-				else if (LayerTangent->GetMappingMode() == FbxGeometryElement::eByControlPoint)
-				{
-					if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eDirect)
-					{
-						Tangent = LayerTangent->GetDirectArray().GetAt(CtrlPointIndex);
-					}
-					else if (LayerTangent->GetReferenceMode() == FbxGeometryElement::eIndexToDirect)
-					{
-						TangentIndex = LayerTangent->GetIndexArray().GetAt(CtrlPointIndex);
-						Tangent = LayerTangent->GetDirectArray().GetAt(TangentIndex);
+						int TIdx = LayerTangent->GetIndexArray().GetAt(PolyVertIndex);
+						T = LayerTangent->GetDirectArray().GetAt(TIdx);
 					}
 				}
 			}
 
-			// Handedness 계산 (Cross product를 이용한 검증)
-			FVector T(Tangent[0], Tangent[1], Tangent[2]);
-			FVector N = OutMeshInfo->NormalList.Last();
-			FVector BiTangent = N.Cross(T);
+			FVector Tangent(T[0], T[1], T[2]);
+			FVector BiTangent = Normal.Cross(Tangent);
 			float Handedness = (BiTangent.Length() > 0.0001f) ? 1.0f : -1.0f;
 
-			OutMeshInfo->TangentList.Add(FVector4(T.X, T.Y, T.Z, Handedness));
+			FVector4 Tangent4(Tangent.X, Tangent.Y, Tangent.Z, Handedness);
 
-			// UV
-			FbxStringList UVSetNames;
-			Mesh->GetUVSetNames(UVSetNames);
-			if (UVSetNames.GetCount() > 0)
+			// -------- UV
+			FVector2 Tex(0, 0);
+			if (Mesh->GetElementUVCount() > 0)
 			{
-				FbxVector2 UV;
-				bool bUnmapped = false;
-				if (Mesh->GetPolygonVertexUV(p, v, UVSetNames[0], UV, bUnmapped))
-				{
-					OutMeshInfo->TexCoordList.Add(FVector2(UV[0], 1.0f - UV[1]));
-				}
-				else
-				{
-					OutMeshInfo->TexCoordList.Add(FVector2(0, 0));
-				}
+				const FbxGeometryElementUV* ElemUV = Mesh->GetElementUV(0);
+				int UVIndex = Mesh->GetTextureUVIndex(p, v);
+
+				FbxVector2 UV = ElemUV->GetDirectArray().GetAt(UVIndex);
+				Tex = FVector2(UV[0], 1.0f - UV[1]);
+			}
+
+			// -------- Dedup Key 생성
+			VertexKey Key;
+			Key.Position = Position;
+			Key.Normal = Normal;
+			Key.UV = Tex;
+			Key.Tangent = Tangent4;
+
+			uint32 FinalIndex;
+			auto Found = VertexCache.find(Key);
+
+			if (Found != VertexCache.end())
+			{
+				// 이미 있는 정점 → 인덱스 재사용
+				FinalIndex = Found->second;
 			}
 			else
 			{
-				OutMeshInfo->TexCoordList.Add(FVector2(0, 0));
+				// 새 정점
+				FinalIndex = OutMeshInfo->VertexList.Num();
+				VertexCache.emplace(Key, FinalIndex);
+
+				OutMeshInfo->VertexList.Add(Position);
+				OutMeshInfo->NormalList.Add(Normal);
+				OutMeshInfo->TexCoordList.Add(Tex);
+				OutMeshInfo->TangentList.Add(Tangent4);
+				OutMeshInfo->ControlPointIndices.Add(CtrlPointIndex + ControlPointOffset);
 			}
 
-			IndicesPerMaterial[MaterialIndex].Add(VertexCounter);
-			VertexCounter++;
+			// 인덱스 추가
+			IndicesPerMaterial[MaterialIndex].Add(FinalIndex);
 		}
 	}
 

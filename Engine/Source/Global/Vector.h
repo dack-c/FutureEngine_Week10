@@ -291,6 +291,11 @@ struct FVector2
 	{
 		return X * Other.X + Y * Other.Y;
 	}
+
+	bool operator==(const FVector2& Other) const
+	{
+		return X == Other.X && Y == Other.Y;
+	}
 };
 
 FArchive& operator<<(FArchive& Ar, FVector2& Vector);
@@ -391,6 +396,11 @@ struct alignas(16) FVector4
 	float Dot3(const FVector& InOtherVector) const
 	{
 		return X * InOtherVector.X + Y * InOtherVector.Y + Z * InOtherVector.Z;
+	}
+
+	bool operator==(const FVector4& Other) const
+	{
+		return X == Other.X && Y == Other.Y && Z == Other.Z && W == Other.W;
 	}
 
 	// Constant Vector (definition from UE5)
